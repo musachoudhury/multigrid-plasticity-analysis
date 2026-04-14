@@ -8,7 +8,7 @@ from petsc4py import PETSc
 import numpy as np
 
 import ufl
-from dolfinx import fem, io, mesh, plot
+from dolfinx import fem, mesh, plot
 from dolfinx.fem.petsc import LinearProblem
 import pyvista
 
@@ -19,7 +19,8 @@ msh = mesh.create_rectangle(
     n=(100, 100),
     cell_type=mesh.CellType.triangle,
 )
-V = fem.functionspace(msh, ("Lagrange", 1))
+V = fem.functionspace(msh, ("Lagrange", 2))
+
 
 tdim = msh.topology.dim
 fdim = tdim - 1
@@ -34,48 +35,50 @@ dofs = fem.locate_dofs_topological(V=V, entity_dim=fdim, entities=facets)
 
 bc = fem.dirichletbc(value=ScalarType(0), dofs=dofs, V=V)
 
-cell_indices, cell_markers = [], []
-
-cellsinfo = [
-    (0, lambda x: np.less_equal(x[1], 0.5)),
-    (1, lambda x: np.greater(x[1], 0.5)),
-]
-
-for marker, locator in cellsinfo:
-    cells_ = mesh.locate_entities(msh, tdim, locator)
-    cell_indices.append(cells_)
-    cell_markers.append(np.full(len(cells_), marker))
-
-cell_indices = np.array(np.hstack(cell_indices), dtype=np.int32)
-cell_markers = np.array(np.hstack(cell_markers), dtype=np.int32)
-sorted_facets = np.argsort(cell_indices)
-cell_tags = mesh.meshtags(
-    msh, tdim, cell_indices[sorted_facets], cell_markers[sorted_facets]
-)
-
-dx = ufl.Measure("dx", domain=msh, subdomain_data=cell_tags)
+dx = ufl.Measure("dx", domain=msh)
 
 # +
 u = ufl.TrialFunction(V)
 v = ufl.TestFunction(V)
 x = ufl.SpatialCoordinate(msh)
 
-# f = 10*ufl.sin(2*ufl.pi*x[0])+10*ufl.sin(10*ufl.pi*x[0])
-# #f = 10 * ufl.exp(-((x[0] - 0.5) ** 2 + (x[1] - 0.5) ** 2) / 0.02)
-# f = 10*ufl.sin(2*ufl.pi*x[0])+10*ufl.sin(10*ufl.pi*x[0])
-# f = 10*ufl.sin(5*ufl.pi*x[0])
-f0 = 20 * ufl.sin(2 * ufl.pi * x[0])
+f0 = 2 * ufl.sin(ufl.pi * x[0])
 f1 = 750 * ufl.sin(20 * ufl.pi * x[0])
 
-# g = ufl.sin(1000 * x[0])
-a = ufl.inner(ufl.grad(u), ufl.grad(v)) * ufl.dx
-L = ufl.inner(f0, v) * dx(0) + ufl.inner(f1, v) * dx(1)  # + ufl.inner(g, v) * ufl.ds
+N_CHECK = 4
+
+
+def checkerboard(x, n=N_CHECK):
+    """
+    Returns +1.0 or -1.0 at every point depending on which sub-square it falls in.
+
+    Parameters
+    ----------
+    x : np.ndarray, shape (3, N)
+        DOLFINx coordinate array: x[0]=x-coords, x[1]=y-coords.
+    n : int
+        Number of sub-squares per side.
+
+    Returns
+    -------
+    np.ndarray, shape (N,)
+    """
+    a = 4000
+    b = 10000
+    i = np.floor(n * x[0]).astype(int)  # column index of sub-square
+    j = np.floor(n * x[1]).astype(int)  # row    index of sub-square
+    return np.where((i + j) % 2 == 0, a, b)
+
+
+k = fem.Function(V)
+k.interpolate(checkerboard)
+
+a = k * ufl.inner(ufl.grad(u), ufl.grad(v)) * dx
+L = ufl.inner(f0, v) * dx
 
 a_form = fem.form(a)
 L_form = fem.form(L)
 
-# -
-# +
 problem = LinearProblem(
     a,
     L,
@@ -90,14 +93,14 @@ problem = LinearProblem(
 # Direct solution
 u_direct = problem.solve()
 
-# Set solver options
+# Iterative solution
+
 opts = PETSc.Options()
-opts["ksp_type"] = "richardson"
+opts["ksp_type"] = "cg"
 opts["ksp_rtol"] = 1.0e-8
 opts["ksp_max_it"] = 100
-# opts["ksp_atol"] = 1.0e-8
-opts["pc_type"] = "jacobi"
-
+opts["ksp_atol"] = 1.0e-8
+opts["pc_type"] = "none"
 
 A = fem.petsc.create_matrix(a_form)
 b = fem.petsc.create_vector(V)
@@ -126,28 +129,21 @@ solver.setMonitor(
 )
 solver.solve(b, uh.x.petsc_vec)
 
+
+reason = solver.getConvergedReason()
+
+print(reason)
+if reason < 0:
+    print("Krylov solver did not converge!")
+
 error = fem.Function(V)
 error.x.array[:] = u_direct.x.array[:] - uh.x.array[:]
 
 assert isinstance(uh, fem.Function)
-# assert isinstance(error, fem.Function)
-# -
-
-# The solution can be written to a {py:class}`XDMFFile
-# <dolfinx.io.XDMFFile>` file visualization with [ParaView](https://www.paraview.org/)
-# or [VisIt](https://visit-dav.github.io/visit-website/):
-
-# +
 
 
 out_folder = Path("out_poisson")
 out_folder.mkdir(parents=True, exist_ok=True)
-with io.XDMFFile(msh.comm, out_folder / "poisson.xdmf", "w") as file:
-    file.write_mesh(msh)
-    file.write_function(error)
-# -
-
-# and displayed using [pyvista](https://docs.pyvista.org/).
 
 
 def plot_graph(s):
@@ -169,6 +165,3 @@ def plot_graph(s):
 plot_graph(u_direct)
 plot_graph(uh)
 plot_graph(error)
-
-
-# %%

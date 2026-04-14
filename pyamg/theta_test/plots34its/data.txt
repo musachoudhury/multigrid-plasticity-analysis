@@ -1,0 +1,11 @@
+--- theta = 0.12121 ---
+MultilevelSolver
+Number of Levels:     4
+Operator Complexity:   2.402
+Grid Complexity:       1.333
+Coarse Solver:        'pinv'
+  level   unknowns     nonzeros
+     0       20402       282404 [41.64%]
+     1        6120       349254 [51.50%]
+     2         612        43857 [6.47%]
+     3          60         2709 [0.40%]
